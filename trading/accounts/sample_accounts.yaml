@@ -1,0 +1,15 @@
+users:
+  - id: diego
+    label: Cuenta Diego
+    exchanges:
+      binance:
+        api_key_env: DIEGO_BINANCE_API_KEY
+        api_secret_env: DIEGO_BINANCE_API_SECRET
+        environment: testnet
+  - id: sofia
+    label: Cuenta Sofia
+    exchanges:
+      binance:
+        api_key_env: SOFIA_BINANCE_API_KEY
+        api_secret_env: SOFIA_BINANCE_API_SECRET
+        environment: live

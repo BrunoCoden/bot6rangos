@@ -1,0 +1,16 @@
+[Unit]
+Description=bot6rangos watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bot6rangos
+EnvironmentFile=/home/ubuntu/bot6rangos/.env
+ExecStart=/home/ubuntu/bot6rangos/.venv/bin/python /home/ubuntu/bot6rangos/watcher_alertas.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

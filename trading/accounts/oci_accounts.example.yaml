@@ -1,0 +1,56 @@
+users:
+  - id: diego
+    label: Cuenta Diego (plantilla)
+    enabled: false
+    metadata: {}
+    exchanges:
+      binance:
+        exchange: binance
+        api_key_env: DIEGO_BINANCE_LIVE_API_KEY
+        api_secret_env: DIEGO_BINANCE_LIVE_API_SECRET
+        environment: live
+        notional_usdt: 100.0
+        leverage: 5
+        extra:
+          symbol: ETHUSDT
+          exchange: binance
+          enabled: false
+      bybit:
+        exchange: bybit
+        api_key_env: DIEGO_BYBIT_LIVE_API_KEY
+        api_secret_env: DIEGO_BYBIT_LIVE_API_SECRET
+        environment: live
+        notional_usdt: 100.0
+        leverage: 5
+        extra:
+          symbol: ETHUSDT
+          exchange: bybit
+          enabled: false
+
+  - id: bruno
+    label: Cuenta Bruno (plantilla)
+    enabled: false
+    metadata: {}
+    exchanges:
+      binance:
+        exchange: binance
+        api_key_env: BRUNO_BINANCE_LIVE_API_KEY
+        api_secret_env: BRUNO_BINANCE_LIVE_API_SECRET
+        environment: live
+        notional_usdt: 100.0
+        leverage: 5
+        extra:
+          symbol: ETHUSDT
+          exchange: binance
+          enabled: false
+      bybit:
+        exchange: bybit
+        api_key_env: BRUNO_BYBIT_TESTNET_API_KEY
+        api_secret_env: BRUNO_BYBIT_TESTNET_API_SECRET
+        environment: testnet
+        notional_usdt: 100.0
+        leverage: 5
+        extra:
+          symbol: ETHUSDT
+          exchange: bybit
+          enabled: false

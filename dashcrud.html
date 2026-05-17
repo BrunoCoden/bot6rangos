@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DashCRUD Cuentas</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #0b1221;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22d3ee;
+      --accent-2: #8b5cf6;
+      --border: #1f2937;
+      --danger: #ef4444;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px 16px 60px;
+      background: radial-gradient(circle at 10% 10%, rgba(34,211,238,0.08), transparent 35%),
+                  radial-gradient(circle at 85% 5%, rgba(139,92,246,0.10), transparent 30%),
+                  var(--bg);
+      color: var(--text);
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+    }
+    h1, h2 { margin: 0; }
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .badge {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #0f172a;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .card header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .path-line { display: flex; align-items: center; justify-content: flex-end; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td {
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.95rem;
+    }
+    th { color: var(--muted); text-align: left; }
+    tr:last-child td { border-bottom: none; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+      color: var(--text);
+    }
+    .tag.on { border-color: rgba(34,197,94,0.5); color: #bbf7d0; }
+    .tag.off { border-color: rgba(239,68,68,0.5); color: #fecdd3; }
+    .tag.env { border-color: rgba(34,211,238,0.5); color: #bae6fd; }
+    .btn {
+      border: none;
+      border-radius: 10px;
+      padding: 9px 12px;
+      color: #0f172a;
+      background: linear-gradient(135deg, var(--accent), #0ea5e9);
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(34,211,238,0.35); }
+    .btn.secondary { background: #1f2937; color: var(--text); box-shadow: none; }
+    .btn.danger { background: var(--danger); color: #fff; }
+    .btn.tiny { padding: 7px 10px; font-size: 0.85rem; }
+    .btn.toggle-on { background: var(--success); color: #0f172a; }
+    .btn.toggle-off { background: #1f2937; color: var(--text); }
+    .actions-cell { white-space: nowrap; }
+    .actions-wrap { display: flex; gap: 6px; justify-content: flex-end; }
+    form { display: grid; gap: 10px; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 0.9rem; }
+    input, select, textarea {
+      width: 100%;
+      padding: 9px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid rgba(34,211,238,0.4);
+      border-color: rgba(34,211,238,0.5);
+    }
+    .row { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+    .status { margin: 10px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); display: none; }
+    .status.show { display: block; }
+    .status.error { border-color: rgba(239,68,68,0.5); color: #fecdd3; }
+    .status.success { border-color: rgba(34,197,94,0.5); color: #bbf7d0; }
+    .list-empty { border: 1px dashed var(--border); border-radius: 10px; padding: 12px; text-align: center; color: var(--muted); }
+    .apply-bar { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+    .pending { display: inline-flex; gap: 8px; align-items: center; }
+    .pending-dot { width: 8px; height: 8px; border-radius: 999px; background: rgba(245,158,11,0.9); box-shadow: 0 0 0 3px rgba(245,158,11,0.15); }
+    @media (max-width: 720px) {
+      body { padding: 18px 12px 40px; }
+      .hero { flex-direction: column; align-items: flex-start; }
+      .apply-bar { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div>
+      <div class="badge">DashCRUD</div>
+      <h1>Gestión de cuentas y exchanges</h1>
+      <div class="muted">Crea/edita usuarios, habilita/deshabilita y define notional/leverage por exchange.</div>
+    </div>
+    <div class="apply-bar">
+      <div class="path-line muted" id="accounts-path">Archivo: -</div>
+      <div class="pending muted" id="pending-wrap" style="display:none;">
+        <span class="pending-dot"></span>
+        <span id="pending-label">Cambios pendientes</span>
+      </div>
+      <button class="btn secondary" type="button" id="apply-btn" disabled>Resetear Watcher para aplicar cambios</button>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <div class="grid">
+    <div class="card">
+      <header><h2>Cuentas</h2></header>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Label</th>
+            <th>Estado</th>
+            <th>Exchange</th>
+            <th>Par</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body"></tbody>
+      </table>
+      <div id="accounts-empty" class="list-empty" style="display:none;">Sin cuentas cargadas.</div>
+    </div>
+
+    <div class="card">
+      <header><h2>Crear / editar cuenta</h2></header>
+      <form id="account-form">
+        <div class="row">
+          <label>ID de usuario
+            <input id="acc-id" required placeholder="ej: user01" />
+          </label>
+          <label>Nombre visible
+            <input id="acc-label" placeholder="Nombre" />
+          </label>
+          <label>Habilitado
+            <select id="acc-enabled">
+              <option value="true">ON</option>
+              <option value="false">OFF</option>
+            </select>
+          </label>
+        </div>
+        <label>Metadata (JSON opcional)
+          <textarea id="acc-metadata" placeholder='{"plan":"mensual"}'></textarea>
+        </label>
+        <div class="row">
+          <button class="btn" type="submit">Guardar cuenta</button>
+          <button class="btn secondary" type="button" id="acc-reset">Limpiar</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <header><h2>Exchange por cuenta</h2></header>
+      <form id="exchange-form">
+        <div class="row">
+          <label>Usuario
+            <select id="ex-user"></select>
+          </label>
+          <label>Exchange
+            <select id="ex-name">
+              <option value="binance">binance</option>
+              <option value="bybit">bybit</option>
+            </select>
+          </label>
+          <label>Entorno
+            <select id="ex-env">
+              <option value="testnet">testnet</option>
+              <option value="live">live</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label>API KEY env
+            <input id="ex-key" placeholder="EJ: USER1_BINANCE_KEY" />
+          </label>
+          <label>API SECRET env
+            <input id="ex-secret" placeholder="EJ: USER1_BINANCE_SECRET" />
+          </label>
+        </div>
+        <div class="row">
+          <label>API KEY (texto)
+            <input id="ex-key-plain" placeholder="Pegá la key aquí" />
+          </label>
+          <label>API SECRET (texto)
+            <input id="ex-secret-plain" placeholder="Pegá el secret aquí" />
+          </label>
+        </div>
+        <div class="row">
+          <label>Notional por trade (USDT)
+            <input id="ex-notional" type="number" step="0.01" min="0" placeholder="100" />
+          </label>
+          <label>Apalancamiento
+            <input id="ex-leverage" type="number" step="1" min="1" placeholder="5" />
+          </label>
+          <label>Par (símbolo)
+            <input id="ex-symbol" placeholder="ETHUSDT" required />
+          </label>
+        </div>
+        <div class="row">
+        </div>
+        <label>Extra (JSON opcional)
+          <textarea id="ex-extra" placeholder='{"hedgeMode":"ISOLATED"}'></textarea>
+        </label>
+        <div class="row">
+          <button class="btn" type="submit">Guardar exchange</button>
+          <button class="btn secondary" type="button" id="ex-reset">Limpiar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const state = { users: [], editingId: null, lastSavedId: null };
+    const statusEl = document.getElementById("status");
+    const accountsBody = document.getElementById("accounts-body");
+    const accountsEmpty = document.getElementById("accounts-empty");
+    const accId = document.getElementById("acc-id");
+    const accLabel = document.getElementById("acc-label");
+    const accEnabled = document.getElementById("acc-enabled");
+    const accMetadata = document.getElementById("acc-metadata");
+    const exUser = document.getElementById("ex-user");
+    const exName = document.getElementById("ex-name");
+    const exEnv = document.getElementById("ex-env");
+    const exKey = document.getElementById("ex-key");
+    const exSecret = document.getElementById("ex-secret");
+    const exKeyPlain = document.getElementById("ex-key-plain");
+    const exSecretPlain = document.getElementById("ex-secret-plain");
+    const exNotional = document.getElementById("ex-notional");
+    const exLeverage = document.getElementById("ex-leverage");
+    const exSymbol = document.getElementById("ex-symbol");
+    const exExtra = document.getElementById("ex-extra");
+    const wrapPassphrase = null;
+    const wrapStark = null;
+    const wrapPassphrasePlain = null;
+    const wrapStarkPlain = null;
+    const accPathLabel = document.getElementById("accounts-path");
+    const pendingWrap = document.getElementById("pending-wrap");
+    const pendingLabel = document.getElementById("pending-label");
+    const applyBtn = document.getElementById("apply-btn");
+
+    function showStatus(msg, type = "info") {
+      statusEl.textContent = msg;
+      statusEl.className = "status show";
+      statusEl.classList.toggle("error", type === "error");
+      statusEl.classList.toggle("success", type === "success");
+    }
+    function clearStatus() { statusEl.className = "status"; statusEl.textContent = ""; }
+
+    function resetExchangePlaceholders() {
+      exKey.placeholder = "EJ: USER1_BINANCE_KEY";
+      exSecret.placeholder = "EJ: USER1_BINANCE_SECRET";
+      exKeyPlain.placeholder = "Pegá la key aquí";
+      exSecretPlain.placeholder = "Pegá el secret aquí";
+    }
+
+    async function api(path, options = {}) {
+      const opts = { ...options };
+      if (opts.body && typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
+      opts.headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+      const res = await fetch(path, opts);
+      let data = {};
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      return data;
+    }
+
+    function parseJsonSafe(text) {
+      if (!text || !text.trim()) return {};
+      try { const obj = JSON.parse(text); return typeof obj === "object" && obj !== null ? obj : {}; }
+      catch (_) { throw new Error("JSON inválido"); }
+    }
+
+    function renderUsers() {
+      accountsBody.innerHTML = "";
+      if (!state.users.length) { accountsEmpty.style.display = "block"; return; }
+      accountsEmpty.style.display = "none";
+      state.users.forEach((u) => {
+        const tr = document.createElement("tr");
+        const ex = (u.exchanges || [])[0];
+        tr.innerHTML = `
+          <td><strong>${u.id}</strong></td>
+          <td>${u.label || "-"}</td>
+          <td><span class="tag ${u.enabled ? "on" : "off"}">${u.enabled ? "ON" : "OFF"}</span></td>
+          <td>${ex ? `${ex.exchange} <span class="tag env">${ex.environment}</span>` : "-"}</td>
+          <td>${ex && ex.symbol ? ex.symbol : "-"}</td>
+        `;
+        const actions = document.createElement("td");
+        actions.className = "actions-cell";
+        const wrap = document.createElement("div");
+        wrap.className = "actions-wrap";
+        const btnEdit = document.createElement("button");
+        btnEdit.className = "btn secondary tiny";
+        btnEdit.textContent = "Editar";
+        btnEdit.addEventListener("click", () => startEdit(u.id));
+        const btnToggle = document.createElement("button");
+        btnToggle.className = `btn tiny ${u.enabled ? "toggle-on" : "toggle-off"}`;
+        btnToggle.textContent = u.enabled ? "ON" : "OFF";
+        btnToggle.title = u.enabled ? "Click para deshabilitar" : "Click para habilitar";
+        btnToggle.addEventListener("click", () => toggleUser(u.id, u.enabled));
+        wrap.appendChild(btnEdit);
+        wrap.appendChild(btnToggle);
+        actions.appendChild(wrap);
+        tr.appendChild(actions);
+        accountsBody.appendChild(tr);
+      });
+    }
+
+    function renderUserSelect() {
+      const opts = state.users.map((u) => `<option value="${u.id}">${u.id} — ${u.label || ""}</option>`).join("");
+      exUser.innerHTML = opts;
+      if (state.lastSavedId && state.users.find((u) => u.id === state.lastSavedId)) {
+        exUser.value = state.lastSavedId;
+      }
+    }
+
+    function startEdit(id) {
+      const u = state.users.find((x) => x.id === id);
+      if (!u) return;
+      state.editingId = id;
+      accId.value = id;
+      accId.disabled = false;
+      accLabel.value = u.label || "";
+      accEnabled.value = u.enabled ? "true" : "false";
+      accMetadata.value = u.metadata && Object.keys(u.metadata).length ? JSON.stringify(u.metadata, null, 2) : "";
+      showStatus(`Editando ${id}`, "info");
+        if (u.exchanges && u.exchanges[0]) {
+          const ex = u.exchanges[0];
+          exUser.value = u.id;
+          exName.value = ex.exchange;
+          exEnv.value = ex.environment;
+          exKey.value = ex.api_key_env || "";
+          exSecret.value = ex.api_secret_env || "";
+          exKeyPlain.value = "";
+          exSecretPlain.value = "";
+          exNotional.value = ex.notional_usdt ?? "";
+          exLeverage.value = ex.leverage ?? "";
+          exSymbol.value = ex.symbol || "";
+          exExtra.value = ex.extra && Object.keys(ex.extra).length ? JSON.stringify(ex.extra, null, 2) : "";
+          resetExchangePlaceholders();
+        }
+    }
+
+    function resetAccountForm() {
+      state.editingId = null;
+      accId.disabled = false;
+      accId.value = "";
+      accLabel.value = "";
+      accEnabled.value = "true";
+      accMetadata.value = "";
+      clearStatus();
+    }
+    function resetExchangeForm() {
+      exName.value = "binance";
+      exEnv.value = "testnet";
+      exKey.value = "";
+      exSecret.value = "";
+      exKeyPlain.value = "";
+      exSecretPlain.value = "";
+      exNotional.value = "";
+      exLeverage.value = "";
+      exSymbol.value = "";
+      exExtra.value = "";
+      resetExchangePlaceholders();
+    }
+
+    async function toggleUser(id, enabled) {
+      const body = { enabled: !enabled };
+      try {
+        await api(`/api/accounts/${encodeURIComponent(id)}`, { method: "PUT", body });
+        showStatus(`Cuenta ${id} ${!enabled ? "habilitada" : "deshabilitada"}`, "success");
+        await loadData();
+      } catch (err) { showStatus(err.message, "error"); }
+    }
+
+    async function handleAccountSubmit(ev) {
+      ev.preventDefault();
+      let metadata = {};
+      try { metadata = parseJsonSafe(accMetadata.value); }
+      catch (err) { showStatus(err.message, "error"); return; }
+      const body = {
+        id: accId.value.trim(),
+        label: accLabel.value.trim(),
+        enabled: accEnabled.value === "true",
+        metadata,
+      };
+      if (!body.id) { showStatus("ID obligatorio", "error"); return; }
+      const symbolVal = exSymbol.value.trim();
+      let exchangePayload = null;
+      if (
+        symbolVal ||
+        exKey.value.trim() ||
+        exSecret.value.trim() ||
+        exNotional.value ||
+        exLeverage.value ||
+        exExtra.value.trim() ||
+        exKeyPlain.value.trim() ||
+        exSecretPlain.value.trim()
+      ) {
+        if (!symbolVal) { showStatus("Par (símbolo) obligatorio para guardar exchange", "error"); return; }
+        exchangePayload = {
+          exchange: exName.value,
+          environment: exEnv.value,
+          api_key_env: exKey.value.trim(),
+          api_secret_env: exSecret.value.trim(),
+          api_key_plain: exKeyPlain.value.trim(),
+          api_secret_plain: exSecretPlain.value.trim(),
+          notional_usdt: exNotional.value ? Number(exNotional.value) : null,
+          leverage: exLeverage.value ? Number(exLeverage.value) : null,
+          symbol: symbolVal.toUpperCase(),
+          extra: parseJsonSafe(exExtra.value),
+        };
+      }
+      try {
+        if (state.editingId) {
+          await api(`/api/accounts/${encodeURIComponent(state.editingId)}`, { method: "PUT", body });
+          showStatus(`Cuenta ${body.id} actualizada`, "success");
+          state.lastSavedId = body.id;
+          // Actualiza exchange si se completó el payload
+          if (exchangePayload) {
+            await api(`/api/accounts/${encodeURIComponent(body.id)}/exchange`, { method: "PUT", body: exchangePayload });
+          }
+        } else {
+          // para crear, exchange es opcional
+          if (exchangePayload) body.exchange = exchangePayload;
+          await api("/api/accounts", { method: "POST", body });
+          showStatus(`Cuenta ${body.id} creada`, "success");
+          state.lastSavedId = body.id;
+        }
+        await loadData();
+        resetAccountForm();
+      } catch (err) { showStatus(err.message, "error"); }
+    }
+
+    async function handleExchangeSubmit(ev) {
+      ev.preventDefault();
+      if (!exUser.value) { showStatus("Selecciona un usuario", "error"); return; }
+      let extra = {};
+      try { extra = parseJsonSafe(exExtra.value); }
+      catch (err) { showStatus(err.message, "error"); return; }
+      if (!exSymbol.value.trim()) { showStatus("Par (símbolo) obligatorio", "error"); return; }
+      const body = {
+        exchange: exName.value,
+        environment: exEnv.value,
+        api_key_env: exKey.value.trim(),
+        api_secret_env: exSecret.value.trim(),
+        api_key_plain: exKeyPlain.value.trim(),
+        api_secret_plain: exSecretPlain.value.trim(),
+        notional_usdt: exNotional.value ? Number(exNotional.value) : null,
+        leverage: exLeverage.value ? Number(exLeverage.value) : null,
+        symbol: exSymbol.value.trim().toUpperCase(),
+        extra,
+      };
+      try {
+        await api(`/api/accounts/${encodeURIComponent(exUser.value)}/exchange`, { method: "PUT", body });
+        showStatus(`Exchange actualizado para ${exUser.value}`, "success");
+        await loadData();
+      } catch (err) { showStatus(err.message, "error"); }
+    }
+
+    async function loadData() {
+      clearStatus();
+      try {
+        const data = await api("/api/accounts");
+        state.users = data.users || [];
+        accPathLabel.textContent = `Archivo: ${data.accounts_path || "-"}`;
+        const pending = data.pending || {};
+        const isPending = !!pending.pending;
+        const count = Array.isArray(pending.changes) ? pending.changes.length : 0;
+        pendingWrap.style.display = isPending ? "inline-flex" : "none";
+        if (isPending) pendingLabel.textContent = `Cambios pendientes: ${count}`;
+        applyBtn.disabled = !isPending;
+        renderUsers();
+        renderUserSelect();
+        if (state.lastSavedId && state.users.find((u) => u.id === state.lastSavedId)) {
+          exUser.value = state.lastSavedId;
+        } else if (state.editingId && state.users.find((u) => u.id === state.editingId)) {
+          exUser.value = state.editingId;
+        } else if (state.users.length && !state.editingId && !state.lastSavedId) {
+          exUser.value = state.users[0].id;
+        }
+      } catch (err) { showStatus(err.message, "error"); }
+    }
+
+    async function handleApply() {
+      clearStatus();
+      applyBtn.disabled = true;
+      try {
+        const resp = await api("/api/apply", { method: "POST", body: {} });
+        showStatus(resp.message || "Watcher reseteado", "success");
+      } catch (err) {
+        showStatus(err.message || "No se pudo resetear el watcher", "error");
+      } finally {
+        await loadData();
+      }
+    }
+
+    document.getElementById("account-form").addEventListener("submit", handleAccountSubmit);
+    document.getElementById("acc-reset").addEventListener("click", resetAccountForm);
+    document.getElementById("exchange-form").addEventListener("submit", handleExchangeSubmit);
+    document.getElementById("ex-reset").addEventListener("click", resetExchangeForm);
+    exName.addEventListener("change", () => toggleDydxFields(exName.value));
+    applyBtn.addEventListener("click", handleApply);
+
+    loadData();
+    toggleDydxFields(exName.value);
+  </script>
+</body>
+</html>

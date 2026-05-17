@@ -1,0 +1,26 @@
+﻿.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.env
+/tmp_payload.json
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Runtime/state (generated)
+alerts_stream.csv
+estrategia_trades.csv
+backtest/backtestTR/pending_thresholds.json
+backtest/backtestTR/realtime_state.json
+backtest/backtestTR/*.csv
+backtest/backtestTR/*.png
+backtest/backtestTR/dashboard.html
+trades_dashboard/live/trades_dashboard.html
+trades_dashboard/live/trades_table.csv
+
+# Local config
+trading/accounts/oci_accounts.yaml
+trading/accounts/oci_accounts.yaml.bak*
