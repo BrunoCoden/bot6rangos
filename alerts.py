@@ -23,6 +23,12 @@ from velas import (
 ALERT_STREAM_BARS = int(os.getenv("ALERT_STREAM_BARS", "5000"))
 SIGNAL_ALERTS_ENABLED = os.getenv("ALERT_ENABLE_BOLLINGER_SIGNALS", "false").lower() == "true"
 STOP_LOSS_PCT = float(os.getenv("STRAT_STOP_LOSS_PCT", "0.02"))
+STRATEGY_MODE = os.getenv("BOT6_STRATEGY_MODE", "sma115_stable").strip().lower()
+
+SMA_STABLE_LEN = int(os.getenv("SMA_STABLE_LEN", "115"))
+SMA_STABLE_PREV_AVG_BARS = int(os.getenv("SMA_STABLE_PREV_AVG_BARS", "10"))
+SMA_STABLE_MAX_DISTANCE_PCT = float(os.getenv("SMA_STABLE_MAX_DISTANCE_PCT", "0.01"))
+SMA_STABLE_TAKE_PROFIT_PCT = float(os.getenv("SMA_STABLE_TAKE_PROFIT_PCT", "0.08"))
 
 RANGE_LOOKBACK_BARS = int(os.getenv("RANGE_LOOKBACK_BARS", "200"))
 RANGE_PCT_UPPER = float(os.getenv("RANGE_PCT_UPPER", "25"))
@@ -254,6 +260,105 @@ def _range3_events(bb: pd.DataFrame, channels: pd.DataFrame, ohlc: pd.DataFrame)
     return [state_event, signal_event]
 
 
+def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
+    global _last_processed_close_ts
+    min_rows = max(SMA_STABLE_LEN, SMA_STABLE_PREV_AVG_BARS) + 3
+    if ohlc.empty or len(ohlc) < min_rows:
+        return []
+
+    # Usa sólo la última vela cerrada; la última fila es vela en formación.
+    i = len(ohlc) - 2
+    row = ohlc.iloc[i]
+    close_ts = row.get("BarCloseTime", ohlc.index[i])
+    close_ts = close_ts if isinstance(close_ts, pd.Timestamp) else pd.Timestamp(close_ts)
+    close_key = close_ts.isoformat()
+    if _last_processed_close_ts is None:
+        _last_processed_close_ts = _load_last_processed_close_ts()
+    if _last_processed_close_ts == close_key:
+        return []
+    _last_processed_close_ts = close_key
+    _save_last_processed_close_ts(close_ts)
+
+    close_series = ohlc["Close"].astype("float64")
+    sma = close_series.rolling(SMA_STABLE_LEN, min_periods=SMA_STABLE_LEN).mean()
+    ohlc4 = (
+        ohlc["Open"].astype("float64")
+        + ohlc["High"].astype("float64")
+        + ohlc["Low"].astype("float64")
+        + ohlc["Close"].astype("float64")
+    ) / 4.0
+    prev_avg = ohlc4.shift(1).rolling(
+        SMA_STABLE_PREV_AVG_BARS,
+        min_periods=SMA_STABLE_PREV_AVG_BARS,
+    ).mean()
+
+    sma_now = float(sma.iloc[i]) if not pd.isna(sma.iloc[i]) else np.nan
+    sma_prev = float(sma.iloc[i - 1]) if i > 0 and not pd.isna(sma.iloc[i - 1]) else np.nan
+    prev10_now = float(prev_avg.iloc[i]) if not pd.isna(prev_avg.iloc[i]) else np.nan
+    if np.isnan(sma_now) or np.isnan(sma_prev) or np.isnan(prev10_now) or sma_now <= 0:
+        return []
+
+    c = float(row["Close"])
+    h = float(row["High"])
+    l = float(row["Low"])
+    prev_close = float(close_series.iloc[i - 1])
+    prev_side = "long" if prev_close > sma_prev else "short" if prev_close < sma_prev else None
+    side = "long" if c > sma_now else "short" if c < sma_now else None
+    distance_pct = abs(c / sma_now - 1.0)
+    prev10_ok = bool((side == "long" and c > prev10_now) or (side == "short" and c < prev10_now))
+    distance_ok = bool(distance_pct <= SMA_STABLE_MAX_DISTANCE_PCT)
+
+    state_event = {
+        "type": "sma115_state",
+        "timestamp": close_ts,
+        "symbol": API_SYMBOL,
+        "price": c,
+        "close_price": c,
+        "high": h,
+        "low": l,
+        "sma": sma_now,
+        "prev10_avg": prev10_now,
+        "side": side,
+        "prev10_ok": prev10_ok,
+        "distance_ok": distance_ok,
+        "distance_pct": distance_pct,
+        "entry_filter_ok": bool(prev10_ok and distance_ok),
+    }
+    if side is None or prev_side is None or side == prev_side:
+        return [state_event]
+
+    entry_mode = "direct" if prev10_ok and distance_ok else "pending"
+    direction = side
+    tp = c * (1.0 + SMA_STABLE_TAKE_PROFIT_PCT) if direction == "long" else c * (1.0 - SMA_STABLE_TAKE_PROFIT_PCT)
+    sl = c * (1.0 - STOP_LOSS_PCT) if direction == "long" else c * (1.0 + STOP_LOSS_PCT)
+    signal_event = {
+        "type": "sma115_signal",
+        "timestamp": close_ts,
+        "message": (
+            f"📶 [SMA115] {SYMBOL_DISPLAY} {STREAM_INTERVAL}: Señal {direction.upper()} "
+            f"close={c:.2f} SMA={sma_now:.2f} prev10={prev10_now:.2f} "
+            f"dist={distance_pct * 100:.3f}% modo={entry_mode}"
+        ),
+        "symbol": API_SYMBOL,
+        "price": c,
+        "entry_price": c,
+        "close_price": c,
+        "direction": direction,
+        "sma": sma_now,
+        "prev10_avg": prev10_now,
+        "prev10_ok": prev10_ok,
+        "distance_ok": distance_ok,
+        "distance_pct": distance_pct,
+        "entry_filter_ok": bool(prev10_ok and distance_ok),
+        "entry_mode": entry_mode,
+        "stop_loss": sl,
+        "take_profit": tp,
+        "sl": sl,
+        "tp": tp,
+    }
+    return [state_event, signal_event]
+
+
 def generate_alerts() -> list[dict]:
     frames = _prepare_frames()
     if not frames:
@@ -267,7 +372,10 @@ def generate_alerts() -> list[dict]:
     if not SIGNAL_ALERTS_ENABLED:
         return []
 
-    events = _range3_events(frames["bollinger"], frames["channels"], frames["stream"])
+    if STRATEGY_MODE == "sma115_stable":
+        events = _sma115_events(frames["stream"])
+    else:
+        events = _range3_events(frames["bollinger"], frames["channels"], frames["stream"])
     for evt in events:
         if evt.get("type") == "range3_signal":
             try:

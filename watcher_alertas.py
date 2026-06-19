@@ -121,6 +121,8 @@ RANGE_FLIP_TAKE_PROFIT_PCT = float(os.getenv("RANGE_FLIP_TAKE_PROFIT_PCT", "0.02
 RANGE_TRAILING_STEP_PCT = float(os.getenv("RANGE_TRAILING_STEP_PCT", "0.01"))
 RANGE_PROFIT_LOCK_TRIGGER_PCT = float(os.getenv("RANGE_PROFIT_LOCK_TRIGGER_PCT", "0.03"))
 RANGE_PROFIT_LOCK_SL_PCT = float(os.getenv("RANGE_PROFIT_LOCK_SL_PCT", "0.005"))
+SMA_STABLE_TAKE_PROFIT_PCT = float(os.getenv("SMA_STABLE_TAKE_PROFIT_PCT", "0.08"))
+SMA_STABLE_PENDING_SL_PCT = float(os.getenv("SMA_STABLE_PENDING_SL_PCT", "0.02"))
 BINANCE_RECV_WINDOW_MS = int(os.getenv("BINANCE_RECV_WINDOW_MS", "20000"))
 BINANCE_HTTP_TIMEOUT = float(os.getenv("BINANCE_HTTP_TIMEOUT", "10"))
 BINANCE_TIMESTAMP_RETRY_COUNT = int(os.getenv("BINANCE_TIMESTAMP_RETRY_COUNT", "2"))
@@ -1589,9 +1591,9 @@ def _compute_thresholds(
     direction: str, entry_price: float, entry_source: str = "signal"
 ) -> tuple[float, float | None, bool]:
     """
-    Calcula precio de cierre por pérdida fija (2%).
-    Long: loss = -2%
-    Short: loss = +2% (en contra)
+    Calcula SL/TP para la stable activa de bot6rangos.
+    - Señal normal: SL general configurado por STRAT_STOP_LOSS_PCT y TP fijo 8%.
+    - Flip legacy: conserva SL/TP de flip si alguna cola vieja lo usa.
     """
     source = str(entry_source).lower()
     sl_pct = RANGE_FLIP_STOP_LOSS_PCT if source == "flip" else LOSS_PCT
@@ -1599,14 +1601,18 @@ def _compute_thresholds(
         loss_price = entry_price * (1 - sl_pct)
     else:
         loss_price = entry_price * (1 + sl_pct)
-    partial_tp_enabled = False
     if source == "flip":
+        partial_tp_enabled = False
         if direction == "long":
             gain_price = entry_price * (1 + RANGE_FLIP_TAKE_PROFIT_PCT)
         else:
             gain_price = entry_price * (1 - RANGE_FLIP_TAKE_PROFIT_PCT)
     else:
-        gain_price = None
+        partial_tp_enabled = False
+        if direction == "long":
+            gain_price = entry_price * (1 + SMA_STABLE_TAKE_PROFIT_PCT)
+        else:
+            gain_price = entry_price * (1 - SMA_STABLE_TAKE_PROFIT_PCT)
     return loss_price, gain_price, partial_tp_enabled
 
 
@@ -3244,8 +3250,6 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
                     f"dir={direction} used={used_price:.6f} loss={loss_price:.6f}"
                 )
 
-        # En Bollinger, al tocar SL siempre se revierte respecto a la posición actual.
-        flip_direction = _opposite_direction(direction)
         if triggered_kind:
             if now_ts - last_attempt < THRESHOLDS_RETRY_SECONDS:
                 keep_thresholds.append(th)
@@ -3293,37 +3297,6 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
                     f"[WATCHER][THRESHOLDS][CLOSE] user={user_id} ex={exchange} symbol={symbol} "
                     f"ok=True kind={triggered_kind}"
                 )
-                if str(triggered_kind) == "flip_take_profit":
-                    open_ok = True
-                    flip_entry = None
-                else:
-                    open_ok, flip_entry = _execute_trade_for_target(
-                        user_id,
-                        exchange,
-                        flip_direction,
-                        symbol,
-                        used_price,
-                        source_event="threshold_flip",
-                        signal_direction=signal_direction,
-                        quantity_override=None if post_tp_sl_active else (abs(pos_amt) if partial_tp_done else None),
-                    )
-                if not open_ok:
-                    print(
-                        f"[WATCHER][WARN] No se pudo abrir flip user={user_id} ex={exchange} "
-                        f"symbol={symbol} dir={flip_direction}"
-                    )
-                elif str(triggered_kind) != "flip_take_profit":
-                    new_th = _register_threshold(
-                        user_id,
-                        exchange,
-                        symbol,
-                        flip_direction,
-                        float(flip_entry or used_price),
-                        signal_direction=flip_direction,
-                        entry_source="flip",
-                        position_qty_ref=None if post_tp_sl_active else (abs(pos_amt) if partial_tp_done else None),
-                    )
-                    keep_thresholds.append(new_th)
                 alerts.append(
                     {
                         "type": "auto_close",
@@ -3331,7 +3304,7 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
                         "message": (
                             f"{symbol} {STREAM_INTERVAL}\n"
                             f"🚨 [SL-HIT] Cierre {direction.upper()} por {triggered_kind}\n"
-                            f"🔁 [REVERSA] {'OK' if open_ok else 'NO'}\n"
+                            f"Estado: FLAT hasta nueva señal/pending\n"
                             f"Entrada: {entry:.2f}\n"
                             f"Último: {used_price:.2f}"
                         ),
@@ -3351,19 +3324,95 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
             continue
 
         hit_loss = False
+        hit_take_profit = False
         hit_partial_tp = False
         if direction == "long":
             hit_loss = (not fired_loss) and used_price <= loss_price
+            hit_take_profit = (
+                (not partial_tp_enabled) and gain_price is not None and (not fired_gain)
+                and used_price >= gain_price
+            )
             hit_partial_tp = (
                 partial_tp_enabled and (not partial_tp_done) and gain_price is not None and (not fired_gain)
                 and used_price >= gain_price
             )
         else:  # short
             hit_loss = (not fired_loss) and used_price >= loss_price
+            hit_take_profit = (
+                (not partial_tp_enabled) and gain_price is not None and (not fired_gain)
+                and used_price <= gain_price
+            )
             hit_partial_tp = (
                 partial_tp_enabled and (not partial_tp_done) and gain_price is not None and (not fired_gain)
                 and used_price <= gain_price
             )
+
+        if hit_take_profit:
+            tp_reason = f"take_profit_{SMA_STABLE_TAKE_PROFIT_PCT * 100:g}pct"
+            print(
+                f"[WATCHER][THRESHOLDS][TP][TRIGGER] user={user_id} ex={exchange} symbol={symbol} "
+                f"dir={direction} last={used_price:.6f} entry={entry:.6f} tp={gain_price:.6f}"
+            )
+            tp_result = _close_position_result(user_id, exchange, symbol, direction)
+            tp_ok = bool(tp_result.get("ok"))
+            if tp_ok:
+                tp_exec_price = _safe_exec_price(tp_result.get("exit_price"))
+                tp_exit_qty = _safe_exec_qty(tp_result.get("exit_qty")) or abs(pos_amt)
+                tp_exit_ts = tp_result.get("exit_ts") or normalize_close_ts(ts) or datetime.now(timezone.utc)
+                close_exit_price_for_balance = float(tp_exec_price if tp_exec_price is not None else used_price)
+                _record_balance_close(
+                    user_id=user_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry,
+                    exit_price=close_exit_price_for_balance,
+                    reason=tp_reason,
+                    close_ts=tp_exit_ts,
+                    source="live",
+                )
+                _register_trades_table_close(
+                    user_id=user_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                    direction=direction,
+                    close_reason=tp_reason,
+                    exit_price=tp_exec_price,
+                    exit_qty=tp_exit_qty,
+                    exit_ts=tp_exit_ts,
+                    fees_usdt=0.0,
+                )
+                _maybe_enqueue_pending_close_resolution(
+                    user_id=user_id,
+                    exchange=exchange,
+                    symbol=symbol,
+                    direction=direction,
+                    close_reason=tp_reason,
+                    close_result=tp_result,
+                    event_ts=tp_exit_ts,
+                )
+                alerts.append(
+                    {
+                        "type": "take_profit",
+                        "timestamp": ts,
+                        "message": (
+                            f"{symbol} {STREAM_INTERVAL}\n"
+                            f"✅ [TP-HIT] Cierre {direction.upper()} por TP +{SMA_STABLE_TAKE_PROFIT_PCT * 100:g}%\n"
+                            f"Entrada: {entry:.2f}\n"
+                            f"Último: {used_price:.2f}"
+                        ),
+                        "direction": direction,
+                        "user_id": user_id,
+                        "exchange": exchange,
+                    }
+                )
+                updated = True
+                continue
+            th["triggered_kind"] = tp_reason
+            th["last_close_attempt"] = now_ts
+            keep_thresholds.append(th)
+            updated = True
+            continue
 
         if hit_partial_tp:
             if not partial_tp_enabled:
@@ -3511,7 +3560,7 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
 
         if hit_loss:
             loss_pct_used = post_tp_sl_pct if post_tp_sl_active else LOSS_PCT
-            kind = f"pérdida -{loss_pct_used * 100:g}%"
+            kind = str(th.get("loss_reason") or f"stop_loss_{loss_pct_used * 100:g}pct")
             # Ejecuta cierre reduceOnly MARKET del tamaño actual
             print(
                 f"[WATCHER][THRESHOLDS][TRIGGER] user={user_id} ex={exchange} symbol={symbol} dir={direction} "
@@ -3560,33 +3609,6 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
                 print(
                     f"[WATCHER][THRESHOLDS][CLOSE] user={user_id} ex={exchange} symbol={symbol} ok=True kind={kind}"
                 )
-                open_ok, flip_entry = _execute_trade_for_target(
-                    user_id,
-                    exchange,
-                    flip_direction,
-                    symbol,
-                    used_price,
-                    source_event="threshold_flip",
-                    signal_direction=signal_direction,
-                    quantity_override=flip_qty_override,
-                )
-                if not open_ok:
-                    print(
-                        f"[WATCHER][WARN] No se pudo abrir flip user={user_id} ex={exchange} "
-                        f"symbol={symbol} dir={flip_direction}"
-                    )
-                else:
-                    new_th = _register_threshold(
-                        user_id,
-                        exchange,
-                        symbol,
-                        flip_direction,
-                        float(flip_entry or used_price),
-                        signal_direction=flip_direction,
-                        entry_source="flip",
-                        position_qty_ref=flip_qty_override,
-                    )
-                    keep_thresholds.append(new_th)
                 alerts.append(
                     {
                         "type": "auto_close",
@@ -3594,7 +3616,7 @@ def _evaluate_thresholds(current_price: float, ts) -> list[dict]:
                         "message": (
                             f"{symbol} {STREAM_INTERVAL}\n"
                             f"🚨 [SL-HIT] Cierre {direction.upper()} por {kind}\n"
-                            f"🔁 [REVERSA] {'OK' if open_ok else 'NO'}\n"
+                            f"Estado: FLAT hasta nueva señal/pending\n"
                             f"Entrada: {entry:.2f}\n"
                             f"Último: {used_price:.2f}"
                         ),
@@ -4502,6 +4524,147 @@ def _range3_save_pending(pending: dict | None) -> None:
         print(f"[WATCHER][RANGE3][PENDING][WARN] save_failed err={exc}")
 
 
+def _apply_sma_pending_defensive_sl(pending_direction: str) -> None:
+    """
+    Stable SMA115: cuando queda un pending contrario y hay posición abierta,
+    ajusta el SL de esa posición al 2% defensivo. El pending sigue activo.
+    """
+    manager = _load_manager()
+    if manager is None:
+        return
+    changed = False
+    for user_id, exchange in _resolve_targets():
+        try:
+            account = manager.get_account(user_id)
+            cred = account.get_exchange(exchange)
+            symbol = (cred.extra or {}).get("symbol") or SYMBOL_DISPLAY.replace(".P", "")
+            pos_amt = _coerce_position(_current_position(user_id, exchange, symbol))
+        except Exception:
+            continue
+        if pos_amt is None or abs(pos_amt) < 1e-8:
+            continue
+        pos_dir = "long" if pos_amt > 0 else "short"
+        if pos_dir == pending_direction:
+            continue
+        for th in _thresholds:
+            if (
+                str(th.get("user_id")) == str(user_id)
+                and str(th.get("exchange")).lower() == str(exchange).lower()
+                and str(th.get("symbol")) == str(symbol)
+                and str(th.get("direction")).lower() == str(pos_dir)
+            ):
+                entry = float(th.get("entry_price") or 0)
+                if entry <= 0:
+                    continue
+                if pos_dir == "long":
+                    th["loss_price"] = entry * (1.0 - SMA_STABLE_PENDING_SL_PCT)
+                else:
+                    th["loss_price"] = entry * (1.0 + SMA_STABLE_PENDING_SL_PCT)
+                th["loss_reason"] = f"pending_defensive_stop_loss_{SMA_STABLE_PENDING_SL_PCT * 100:g}pct"
+                th["pending_defensive_active"] = True
+                th["fired_loss"] = False
+                changed = True
+                print(
+                    f"[WATCHER][SMA115][PENDING-SL] user={user_id} ex={exchange} symbol={symbol} "
+                    f"pos={pos_dir} pending={pending_direction} loss={float(th['loss_price']):.6f}"
+                )
+                break
+    if changed:
+        _save_thresholds()
+
+
+def _sma115_pending_confirmed(pending: dict, state_evt: dict) -> bool:
+    direction = str(pending.get("direction") or "").lower()
+    side = str(state_evt.get("side") or "").lower()
+    if direction not in {"long", "short"} or side != direction:
+        return False
+    # Reproduce la stable final: el pending se llena cuando el precio vuelve
+    # a estar dentro del 1% de la SMA. El prev10 del pending queda trazado
+    # desde la señal original.
+    return bool(state_evt.get("distance_ok"))
+
+
+def _sma115_execute_pending(pending: dict, state_evt: dict) -> None:
+    event = dict(pending.get("event") or {})
+    direction = str(pending.get("direction") or event.get("direction") or "").lower()
+    price = float(state_evt.get("close_price") or state_evt.get("price") or event.get("price") or 0)
+    if direction not in {"long", "short"} or price <= 0:
+        _range3_save_pending(None)
+        return
+    event.update(
+        {
+            "type": "sma115_pending_fill",
+            "timestamp": state_evt.get("timestamp") or datetime.now(timezone.utc),
+            "direction": direction,
+            "price": price,
+            "entry_price": price,
+            "close_price": price,
+            "entry_mode": "pending_fill",
+            "sma": state_evt.get("sma"),
+            "distance_pct": state_evt.get("distance_pct"),
+            "message": (
+                f"📥 [SMA115] Pending ejecutado {direction.upper()} "
+                f"{event.get('symbol', SYMBOL_DISPLAY.replace('.P', ''))} en {price:.2f}"
+            ),
+        }
+    )
+    _range3_save_pending(None)
+    print(
+        f"[WATCHER][SMA115][PENDING][FILL] dir={direction} price={price:.6f} "
+        f"ts={event.get('timestamp')}"
+    )
+    alerts_to_send = [event]
+    if TRADING_ENABLED:
+        alerts_to_send.extend(_submit_trade(event) or [])
+    try:
+        send_alerts(alerts_to_send)
+    except Exception as exc:
+        print(f"[WATCHER][SMA115][PENDING][WARN] fill_alert_failed err={exc}")
+
+
+def _sma115_process_state(evt: dict) -> None:
+    pending = _range3_load_pending()
+    if not pending or str(pending.get("strategy") or "") != "sma115_stable":
+        return
+    if _sma115_pending_confirmed(pending, evt):
+        _sma115_execute_pending(pending, evt)
+
+
+def _sma115_process_signal(evt: dict) -> bool:
+    direction = str(evt.get("direction") or "").lower()
+    if direction not in {"long", "short"}:
+        return False
+    pending = _range3_load_pending()
+    if pending:
+        print(
+            f"[WATCHER][SMA115][PENDING][REPLACE] prev_dir={pending.get('direction')} "
+            f"new_dir={direction}"
+        )
+        _range3_save_pending(None)
+    if evt.get("entry_mode") != "pending":
+        return False
+    pending_payload = {
+        "strategy": "sma115_stable",
+        "direction": direction,
+        "symbol": evt.get("symbol") or SYMBOL_DISPLAY.replace(".P", ""),
+        "created_ts": datetime.now(timezone.utc).isoformat(),
+        "signal_ts": str(evt.get("timestamp")),
+        "event": evt,
+    }
+    _range3_save_pending(pending_payload)
+    _apply_sma_pending_defensive_sl(direction)
+    _signal_bus_export_event(evt)
+    print(
+        f"[WATCHER][SMA115][PENDING][SET] dir={direction} "
+        f"symbol={pending_payload['symbol']} close={evt.get('close_price')}"
+    )
+    try:
+        send_alerts([evt])
+    except Exception as exc:
+        print(f"[WATCHER][SMA115][PENDING][WARN] alert_failed err={exc}")
+    return True
+
+
 def _range3_pending_hit(pending: dict, high: float, low: float) -> bool:
     try:
         side = int(pending.get("side") or 0)
@@ -4633,6 +4796,9 @@ def _range3_process_signal(evt: dict) -> bool:
 
 def _process_events(events: list[dict], seen: list[tuple[str, object]]) -> None:
     for evt in events or []:
+        if evt.get("type") == "sma115_state":
+            _sma115_process_state(evt)
+            continue
         if evt.get("type") == "range3_state":
             _range3_process_state(evt)
             continue
@@ -4642,6 +4808,8 @@ def _process_events(events: list[dict], seen: list[tuple[str, object]]) -> None:
             continue
         seen.append(key)
         seen[:] = seen[-MAX_SEEN:]
+        if evt.get("type") == "sma115_signal" and _sma115_process_signal(evt):
+            continue
         if evt.get("type") == "range3_signal" and _range3_process_signal(evt):
             continue
         _signal_bus_export_event(evt)
