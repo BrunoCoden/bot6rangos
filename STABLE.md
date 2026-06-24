@@ -1,32 +1,44 @@
-# Stable Release: 2026-01-08 (Gauchito Gil)
+# Stable Release: SMA115 Combinado Funding/Rango
 
-Tag: `stable-2026-01-08-gauchito-gil`
+Tag: `stable-sma115-combined-funding-range-20260624`
 
 ## Estado del release
 
-- Watcher: en producción, reinicio validado.
-- Trading: habilitado.
-- Thresholds: reconstrucción al inicio habilitada.
-- Binance/Bybit: posiciones detectadas y thresholds guardados.
+- Estrategia activa: `sma115_stable` con filtro combinado.
+- Produccion VM: `/home/ubuntu/bot6rangos`.
+- Watcher: `bot6rangos-watcher.service` activo.
+- Trading real: desactivado por `WATCHER_TRADING_DRY_RUN=true`.
 
-## Configuración clave
+## Logica estable
 
-- `WATCHER_THRESHOLDS_REBUILD_ON_STARTUP=true`
-- `WATCHER_THRESHOLDS_CLEAR_ON_STARTUP=false`
+- SMA `115`, timeframe `30m`.
+- TP `8%`.
+- SL defensivo al crear pending: `2%`.
+- SL general de toda operacion abierta: `5%`.
+- Filtros base:
+  - cierre contra promedio de las `10` velas previas;
+  - distancia maxima a SMA: `abs(close / SMA - 1) <= 1%`.
+- Filtro combinado:
+  - `funding_abs <= 0.00005`;
+  - `range96_pct >= 3.0`.
 
-## Notional por usuario/exchange
+## Configuracion clave VM
 
-- `diego/binance`: `notional_usdt: 10000.0`
-- `diego/bybit`: `notional_usdt: 5000.0`
-- `bruno/binance`: `notional_usdt: 5.0`
+- `BOT6_STRATEGY_MODE=sma115_stable`
+- `SMA_STABLE_COMBINED_FILTER_ENABLED=true`
+- `SMA_STABLE_FUNDING_ABS_MAX=0.00005`
+- `SMA_STABLE_RANGE_WINDOW=96`
+- `SMA_STABLE_RANGE_MIN_PCT=3.0`
+- `WATCHER_TRADING_DRY_RUN=true`
 
-## Thresholds (estado al reinicio)
+## Backtest de referencia
 
-- `diego/binance` (ETHUSDT): entry `3127.01`, loss `2970.6595`, gain `3408.4409`
-- `diego/bybit` (ETHUSDT): entry `3126.51`, loss `2970.1845`, gain `3407.8959`
+Periodo: `2025-01-01` a `2026-06-19`, `ETHUSDT 30m`.
 
-## Notas operativas
+- Trades: `458`
+- PnL total: `272.926%`
+- Peor racha negativa: `-9.321%`
 
-- Los thresholds se guardan en `backtest/backtestTR/pending_thresholds.json`.
-- El watcher reconstruye thresholds desde posiciones abiertas al iniciar.
-- En la VM se comentaron alias en `.env` que pisaban claves de Binance; revisar antes de reactivar.
+Referencia local:
+
+`/home/diego/backtest historico bb ranged alt tp/data/sma115_STABLE_combined_funding_range_sweep_ETHUSDT_202501_20260619_30m_20260623/funding_5e-05_range_range96_pct_3p0`

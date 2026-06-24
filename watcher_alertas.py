@@ -4578,10 +4578,7 @@ def _sma115_pending_confirmed(pending: dict, state_evt: dict) -> bool:
     side = str(state_evt.get("side") or "").lower()
     if direction not in {"long", "short"} or side != direction:
         return False
-    # Reproduce la stable final: el pending se llena cuando el precio vuelve
-    # a estar dentro del 1% de la SMA. El prev10 del pending queda trazado
-    # desde la señal original.
-    return bool(state_evt.get("distance_ok"))
+    return bool(state_evt.get("distance_ok") and state_evt.get("combo_ok", True))
 
 
 def _sma115_execute_pending(pending: dict, state_evt: dict) -> None:
@@ -4601,7 +4598,16 @@ def _sma115_execute_pending(pending: dict, state_evt: dict) -> None:
             "close_price": price,
             "entry_mode": "pending_fill",
             "sma": state_evt.get("sma"),
+            "prev10_avg": state_evt.get("prev10_avg"),
+            "prev10_ok": state_evt.get("prev10_ok"),
+            "distance_ok": state_evt.get("distance_ok"),
             "distance_pct": state_evt.get("distance_pct"),
+            "funding_abs": state_evt.get("funding_abs"),
+            "funding_ok": state_evt.get("funding_ok"),
+            "range_window": state_evt.get("range_window"),
+            "range_pct": state_evt.get("range_pct"),
+            "range_ok": state_evt.get("range_ok"),
+            "combo_ok": state_evt.get("combo_ok"),
             "message": (
                 f"📥 [SMA115] Pending ejecutado {direction.upper()} "
                 f"{event.get('symbol', SYMBOL_DISPLAY.replace('.P', ''))} en {price:.2f}"
@@ -4634,6 +4640,7 @@ def _sma115_process_signal(evt: dict) -> bool:
     direction = str(evt.get("direction") or "").lower()
     if direction not in {"long", "short"}:
         return False
+    entry_mode = str(evt.get("entry_mode") or "").lower()
     pending = _range3_load_pending()
     if pending:
         print(
@@ -4641,7 +4648,20 @@ def _sma115_process_signal(evt: dict) -> bool:
             f"new_dir={direction}"
         )
         _range3_save_pending(None)
-    if evt.get("entry_mode") != "pending":
+    if entry_mode in {"ignored_prev10", "ignored_filters", "ignored_combo"}:
+        _signal_bus_export_event(evt)
+        print(
+            f"[WATCHER][SMA115][SIGNAL][IGNORED] dir={direction} "
+            f"reason={entry_mode} close={evt.get('close_price')} "
+            f"prev10={evt.get('prev10_avg')} dist={evt.get('distance_pct')} "
+            f"funding={evt.get('funding_abs')} range={evt.get('range_pct')}"
+        )
+        try:
+            send_alerts([evt])
+        except Exception as exc:
+            print(f"[WATCHER][SMA115][IGNORED][WARN] alert_failed err={exc}")
+        return True
+    if entry_mode != "pending":
         return False
     pending_payload = {
         "strategy": "sma115_stable",
@@ -4656,7 +4676,8 @@ def _sma115_process_signal(evt: dict) -> bool:
     _signal_bus_export_event(evt)
     print(
         f"[WATCHER][SMA115][PENDING][SET] dir={direction} "
-        f"symbol={pending_payload['symbol']} close={evt.get('close_price')}"
+        f"symbol={pending_payload['symbol']} close={evt.get('close_price')} "
+        f"funding={evt.get('funding_abs')} range={evt.get('range_pct')}"
     )
     try:
         send_alerts([evt])

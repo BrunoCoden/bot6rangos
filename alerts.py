@@ -29,6 +29,14 @@ SMA_STABLE_LEN = int(os.getenv("SMA_STABLE_LEN", "115"))
 SMA_STABLE_PREV_AVG_BARS = int(os.getenv("SMA_STABLE_PREV_AVG_BARS", "10"))
 SMA_STABLE_MAX_DISTANCE_PCT = float(os.getenv("SMA_STABLE_MAX_DISTANCE_PCT", "0.01"))
 SMA_STABLE_TAKE_PROFIT_PCT = float(os.getenv("SMA_STABLE_TAKE_PROFIT_PCT", "0.08"))
+SMA_STABLE_COMBINED_FILTER_ENABLED = (
+    os.getenv("SMA_STABLE_COMBINED_FILTER_ENABLED", "false").lower() == "true"
+)
+SMA_STABLE_FUNDING_ABS_MAX = float(os.getenv("SMA_STABLE_FUNDING_ABS_MAX", "0.00005"))
+SMA_STABLE_RANGE_WINDOW = int(os.getenv("SMA_STABLE_RANGE_WINDOW", "96"))
+SMA_STABLE_RANGE_MIN_PCT = float(os.getenv("SMA_STABLE_RANGE_MIN_PCT", "3.0"))
+SMA_STABLE_FUNDING_HTTP_TIMEOUT = float(os.getenv("SMA_STABLE_FUNDING_HTTP_TIMEOUT", "5"))
+SMA_STABLE_FUNDING_BASE_URL = os.getenv("BINANCE_UM_BASE_URL", "https://fapi.binance.com").rstrip("/")
 
 RANGE_LOOKBACK_BARS = int(os.getenv("RANGE_LOOKBACK_BARS", "200"))
 RANGE_PCT_UPPER = float(os.getenv("RANGE_PCT_UPPER", "25"))
@@ -46,6 +54,7 @@ TELEGRAM_CHAT_IDS = [part.strip() for part in _chat_ids_raw.replace(";", ",").sp
 
 _LAST_RANGE_SIGNAL_PATH = Path(os.getenv("RANGE_LAST_SIGNAL_PATH", "backtest/backtestTR/range3_last_signal.json"))
 _last_processed_close_ts: str | None = None
+_funding_cache: dict[str, tuple[int, float | None]] = {}
 
 LOCAL_TZ_NAME = os.getenv("TZ", "UTC")
 try:
@@ -150,6 +159,38 @@ def _save_last_processed_close_ts(close_ts: pd.Timestamp) -> None:
         )
     except Exception as exc:
         print(f"[RANGE3][WARN] No se pudo guardar last close ts: {exc}")
+
+
+def _timestamp_ms(ts: pd.Timestamp) -> int:
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return int(ts.tz_convert("UTC").timestamp() * 1000)
+
+
+def _fetch_last_funding_abs(symbol: str, close_ts: pd.Timestamp) -> float | None:
+    end_ms = _timestamp_ms(close_ts)
+    cache_key = f"{symbol}|{end_ms // 28_800_000}"
+    cached = _funding_cache.get(cache_key)
+    if cached and cached[0] <= end_ms:
+        return cached[1]
+    try:
+        resp = requests.get(
+            f"{SMA_STABLE_FUNDING_BASE_URL}/fapi/v1/fundingRate",
+            params={"symbol": symbol, "endTime": end_ms, "limit": 1},
+            timeout=SMA_STABLE_FUNDING_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            _funding_cache[cache_key] = (end_ms, None)
+            return None
+        funding_abs = abs(float(data[-1].get("fundingRate")))
+        funding_time = int(data[-1].get("fundingTime") or end_ms)
+        _funding_cache[cache_key] = (funding_time, funding_abs)
+        return funding_abs
+    except Exception as exc:
+        print(f"[WATCHER][SMA115][COMBO][WARN] funding_fetch_failed err={exc}")
+        return None
 
 
 def _range3_events(bb: pd.DataFrame, channels: pd.DataFrame, ohlc: pd.DataFrame) -> list[dict]:
@@ -262,7 +303,7 @@ def _range3_events(bb: pd.DataFrame, channels: pd.DataFrame, ohlc: pd.DataFrame)
 
 def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     global _last_processed_close_ts
-    min_rows = max(SMA_STABLE_LEN, SMA_STABLE_PREV_AVG_BARS) + 3
+    min_rows = max(SMA_STABLE_LEN, SMA_STABLE_PREV_AVG_BARS, SMA_STABLE_RANGE_WINDOW) + 3
     if ohlc.empty or len(ohlc) < min_rows:
         return []
 
@@ -281,6 +322,10 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
 
     close_series = ohlc["Close"].astype("float64")
     sma = close_series.rolling(SMA_STABLE_LEN, min_periods=SMA_STABLE_LEN).mean()
+    range_window = max(int(SMA_STABLE_RANGE_WINDOW), 2)
+    range_high = ohlc["High"].astype("float64").rolling(range_window, min_periods=range_window).max()
+    range_low = ohlc["Low"].astype("float64").rolling(range_window, min_periods=range_window).min()
+    range_pct = ((range_high - range_low) / sma) * 100.0
     ohlc4 = (
         ohlc["Open"].astype("float64")
         + ohlc["High"].astype("float64")
@@ -295,6 +340,7 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     sma_now = float(sma.iloc[i]) if not pd.isna(sma.iloc[i]) else np.nan
     sma_prev = float(sma.iloc[i - 1]) if i > 0 and not pd.isna(sma.iloc[i - 1]) else np.nan
     prev10_now = float(prev_avg.iloc[i]) if not pd.isna(prev_avg.iloc[i]) else np.nan
+    range_pct_now = float(range_pct.iloc[i]) if not pd.isna(range_pct.iloc[i]) else np.nan
     if np.isnan(sma_now) or np.isnan(sma_prev) or np.isnan(prev10_now) or sma_now <= 0:
         return []
 
@@ -307,6 +353,18 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     distance_pct = abs(c / sma_now - 1.0)
     prev10_ok = bool((side == "long" and c > prev10_now) or (side == "short" and c < prev10_now))
     distance_ok = bool(distance_pct <= SMA_STABLE_MAX_DISTANCE_PCT)
+    funding_abs = _fetch_last_funding_abs(API_SYMBOL, close_ts) if SMA_STABLE_COMBINED_FILTER_ENABLED else None
+    funding_ok = (
+        True
+        if not SMA_STABLE_COMBINED_FILTER_ENABLED
+        else funding_abs is not None and funding_abs <= SMA_STABLE_FUNDING_ABS_MAX
+    )
+    range_ok = (
+        True
+        if not SMA_STABLE_COMBINED_FILTER_ENABLED
+        else (not np.isnan(range_pct_now)) and range_pct_now >= SMA_STABLE_RANGE_MIN_PCT
+    )
+    combo_ok = bool(funding_ok and range_ok)
 
     state_event = {
         "type": "sma115_state",
@@ -323,11 +381,24 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         "distance_ok": distance_ok,
         "distance_pct": distance_pct,
         "entry_filter_ok": bool(prev10_ok and distance_ok),
+        "funding_abs": funding_abs,
+        "funding_ok": funding_ok,
+        "range_window": range_window,
+        "range_pct": None if np.isnan(range_pct_now) else range_pct_now,
+        "range_ok": range_ok,
+        "combo_ok": combo_ok,
     }
     if side is None or prev_side is None or side == prev_side:
         return [state_event]
 
-    entry_mode = "direct" if prev10_ok and distance_ok else "pending"
+    if not combo_ok:
+        entry_mode = "ignored_combo"
+    elif prev10_ok and distance_ok:
+        entry_mode = "direct"
+    elif prev10_ok and not distance_ok:
+        entry_mode = "pending"
+    else:
+        entry_mode = "ignored_prev10"
     direction = side
     tp = c * (1.0 + SMA_STABLE_TAKE_PROFIT_PCT) if direction == "long" else c * (1.0 - SMA_STABLE_TAKE_PROFIT_PCT)
     sl = c * (1.0 - STOP_LOSS_PCT) if direction == "long" else c * (1.0 + STOP_LOSS_PCT)
@@ -337,7 +408,9 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         "message": (
             f"📶 [SMA115] {SYMBOL_DISPLAY} {STREAM_INTERVAL}: Señal {direction.upper()} "
             f"close={c:.2f} SMA={sma_now:.2f} prev10={prev10_now:.2f} "
-            f"dist={distance_pct * 100:.3f}% modo={entry_mode}"
+            f"dist={distance_pct * 100:.3f}% modo={entry_mode} "
+            f"funding_abs={funding_abs if funding_abs is not None else 'NA'} "
+            f"range{range_window}={range_pct_now if not np.isnan(range_pct_now) else 'NA'}"
         ),
         "symbol": API_SYMBOL,
         "price": c,
@@ -351,6 +424,12 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         "distance_pct": distance_pct,
         "entry_filter_ok": bool(prev10_ok and distance_ok),
         "entry_mode": entry_mode,
+        "funding_abs": funding_abs,
+        "funding_ok": funding_ok,
+        "range_window": range_window,
+        "range_pct": None if np.isnan(range_pct_now) else range_pct_now,
+        "range_ok": range_ok,
+        "combo_ok": combo_ok,
         "stop_loss": sl,
         "take_profit": tp,
         "sl": sl,
