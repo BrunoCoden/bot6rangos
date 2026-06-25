@@ -4607,6 +4607,12 @@ def _sma115_execute_pending(pending: dict, state_evt: dict) -> None:
             "range_window": state_evt.get("range_window"),
             "range_pct": state_evt.get("range_pct"),
             "range_ok": state_evt.get("range_ok"),
+            "cross_density_window": state_evt.get("cross_density_window"),
+            "cross_count": state_evt.get("cross_count"),
+            "cross_density_ok": state_evt.get("cross_density_ok"),
+            "slope_window": state_evt.get("slope_window"),
+            "sma_slope_pct": state_evt.get("sma_slope_pct"),
+            "slope_ok": state_evt.get("slope_ok"),
             "combo_ok": state_evt.get("combo_ok"),
             "message": (
                 f"📥 [SMA115] Pending ejecutado {direction.upper()} "

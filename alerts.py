@@ -35,6 +35,10 @@ SMA_STABLE_COMBINED_FILTER_ENABLED = (
 SMA_STABLE_FUNDING_ABS_MAX = float(os.getenv("SMA_STABLE_FUNDING_ABS_MAX", "0.00005"))
 SMA_STABLE_RANGE_WINDOW = int(os.getenv("SMA_STABLE_RANGE_WINDOW", "96"))
 SMA_STABLE_RANGE_MIN_PCT = float(os.getenv("SMA_STABLE_RANGE_MIN_PCT", "3.0"))
+SMA_STABLE_CROSS_DENSITY_WINDOW = int(os.getenv("SMA_STABLE_CROSS_DENSITY_WINDOW", "96"))
+SMA_STABLE_CROSS_DENSITY_MAX = int(os.getenv("SMA_STABLE_CROSS_DENSITY_MAX", "10"))
+SMA_STABLE_SLOPE_WINDOW = int(os.getenv("SMA_STABLE_SLOPE_WINDOW", "96"))
+SMA_STABLE_SLOPE_MIN_ABS_PCT = float(os.getenv("SMA_STABLE_SLOPE_MIN_ABS_PCT", "0.15"))
 SMA_STABLE_FUNDING_HTTP_TIMEOUT = float(os.getenv("SMA_STABLE_FUNDING_HTTP_TIMEOUT", "5"))
 SMA_STABLE_FUNDING_BASE_URL = os.getenv("BINANCE_UM_BASE_URL", "https://fapi.binance.com").rstrip("/")
 
@@ -303,7 +307,16 @@ def _range3_events(bb: pd.DataFrame, channels: pd.DataFrame, ohlc: pd.DataFrame)
 
 def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     global _last_processed_close_ts
-    min_rows = max(SMA_STABLE_LEN, SMA_STABLE_PREV_AVG_BARS, SMA_STABLE_RANGE_WINDOW) + 3
+    min_rows = (
+        max(
+            SMA_STABLE_LEN,
+            SMA_STABLE_PREV_AVG_BARS,
+            SMA_STABLE_RANGE_WINDOW,
+            SMA_STABLE_CROSS_DENSITY_WINDOW,
+            SMA_STABLE_SLOPE_WINDOW,
+        )
+        + 3
+    )
     if ohlc.empty or len(ohlc) < min_rows:
         return []
 
@@ -326,6 +339,21 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     range_high = ohlc["High"].astype("float64").rolling(range_window, min_periods=range_window).max()
     range_low = ohlc["Low"].astype("float64").rolling(range_window, min_periods=range_window).min()
     range_pct = ((range_high - range_low) / sma) * 100.0
+    side_series = pd.Series(index=ohlc.index, dtype="object")
+    side_series[close_series > sma] = "long"
+    side_series[close_series < sma] = "short"
+    cross_density_window = max(int(SMA_STABLE_CROSS_DENSITY_WINDOW), 2)
+    side_cross = (
+        side_series.notna()
+        & side_series.shift(1).notna()
+        & side_series.ne(side_series.shift(1))
+    ).astype("int64")
+    cross_count = side_cross.rolling(
+        cross_density_window,
+        min_periods=cross_density_window,
+    ).sum()
+    slope_window = max(int(SMA_STABLE_SLOPE_WINDOW), 1)
+    sma_slope_pct = (sma / sma.shift(slope_window) - 1.0) * 100.0
     ohlc4 = (
         ohlc["Open"].astype("float64")
         + ohlc["High"].astype("float64")
@@ -341,6 +369,8 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
     sma_prev = float(sma.iloc[i - 1]) if i > 0 and not pd.isna(sma.iloc[i - 1]) else np.nan
     prev10_now = float(prev_avg.iloc[i]) if not pd.isna(prev_avg.iloc[i]) else np.nan
     range_pct_now = float(range_pct.iloc[i]) if not pd.isna(range_pct.iloc[i]) else np.nan
+    cross_count_now = float(cross_count.iloc[i]) if not pd.isna(cross_count.iloc[i]) else np.nan
+    sma_slope_pct_now = float(sma_slope_pct.iloc[i]) if not pd.isna(sma_slope_pct.iloc[i]) else np.nan
     if np.isnan(sma_now) or np.isnan(sma_prev) or np.isnan(prev10_now) or sma_now <= 0:
         return []
 
@@ -364,7 +394,18 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         if not SMA_STABLE_COMBINED_FILTER_ENABLED
         else (not np.isnan(range_pct_now)) and range_pct_now >= SMA_STABLE_RANGE_MIN_PCT
     )
-    combo_ok = bool(funding_ok and range_ok)
+    cross_density_ok = (
+        True
+        if not SMA_STABLE_COMBINED_FILTER_ENABLED
+        else (not np.isnan(cross_count_now)) and cross_count_now <= SMA_STABLE_CROSS_DENSITY_MAX
+    )
+    slope_ok = (
+        True
+        if not SMA_STABLE_COMBINED_FILTER_ENABLED
+        else (not np.isnan(sma_slope_pct_now))
+        and abs(sma_slope_pct_now) > SMA_STABLE_SLOPE_MIN_ABS_PCT
+    )
+    combo_ok = bool(funding_ok and range_ok and cross_density_ok and slope_ok)
 
     state_event = {
         "type": "sma115_state",
@@ -386,6 +427,12 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         "range_window": range_window,
         "range_pct": None if np.isnan(range_pct_now) else range_pct_now,
         "range_ok": range_ok,
+        "cross_density_window": cross_density_window,
+        "cross_count": None if np.isnan(cross_count_now) else cross_count_now,
+        "cross_density_ok": cross_density_ok,
+        "slope_window": slope_window,
+        "sma_slope_pct": None if np.isnan(sma_slope_pct_now) else sma_slope_pct_now,
+        "slope_ok": slope_ok,
         "combo_ok": combo_ok,
     }
     if side is None or prev_side is None or side == prev_side:
@@ -410,7 +457,9 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
             f"close={c:.2f} SMA={sma_now:.2f} prev10={prev10_now:.2f} "
             f"dist={distance_pct * 100:.3f}% modo={entry_mode} "
             f"funding_abs={funding_abs if funding_abs is not None else 'NA'} "
-            f"range{range_window}={range_pct_now if not np.isnan(range_pct_now) else 'NA'}"
+            f"range{range_window}={range_pct_now if not np.isnan(range_pct_now) else 'NA'} "
+            f"cross{cross_density_window}={cross_count_now if not np.isnan(cross_count_now) else 'NA'} "
+            f"slope{slope_window}={sma_slope_pct_now if not np.isnan(sma_slope_pct_now) else 'NA'}"
         ),
         "symbol": API_SYMBOL,
         "price": c,
@@ -429,6 +478,12 @@ def _sma115_events(ohlc: pd.DataFrame) -> list[dict]:
         "range_window": range_window,
         "range_pct": None if np.isnan(range_pct_now) else range_pct_now,
         "range_ok": range_ok,
+        "cross_density_window": cross_density_window,
+        "cross_count": None if np.isnan(cross_count_now) else cross_count_now,
+        "cross_density_ok": cross_density_ok,
+        "slope_window": slope_window,
+        "sma_slope_pct": None if np.isnan(sma_slope_pct_now) else sma_slope_pct_now,
+        "slope_ok": slope_ok,
         "combo_ok": combo_ok,
         "stop_loss": sl,
         "take_profit": tp,
